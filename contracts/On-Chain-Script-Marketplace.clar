@@ -7,6 +7,8 @@
 (define-constant ERR_EXPIRED (err u6))
 (define-constant ERR_INVALID_PRICE (err u7))
 (define-constant ERR_INVALID_DURATION (err u8))
+(define-constant ERR_INVALID_RATING (err u9))
+(define-constant ERR_ALREADY_REVIEWED (err u10))
 
 (define-data-var next-script-id uint u1)
 (define-data-var platform-fee uint u500)
@@ -37,6 +39,23 @@
 (define-map writer-earnings principal uint)
 (define-map writer-scripts principal (list 100 uint))
 (define-map buyer-purchases principal (list 100 uint))
+
+(define-map script-reviews
+  {script-id: uint, reviewer: principal}
+  {
+    rating: uint,
+    comment: (string-ascii 500),
+    reviewed-at: uint
+  }
+)
+
+(define-map script-rating-totals
+  uint
+  {
+    total-rating: uint,
+    review-count: uint
+  }
+)
 
 (define-public (register-script (title (string-ascii 100)) 
                                (description (string-ascii 500))
@@ -170,6 +189,37 @@
   )
 )
 
+(define-public (submit-review (script-id uint) (rating uint) (comment (string-ascii 500)))
+  (let ((script-info (unwrap! (map-get? scripts script-id) ERR_NOT_FOUND))
+        (access-info (unwrap! (map-get? script-access {script-id: script-id, buyer: tx-sender}) ERR_ACCESS_DENIED))
+        (existing-review (map-get? script-reviews {script-id: script-id, reviewer: tx-sender})))
+    
+    (asserts! (is-none existing-review) ERR_ALREADY_REVIEWED)
+    (asserts! (and (>= rating u1) (<= rating u5)) ERR_INVALID_RATING)
+    
+    (map-set script-reviews 
+      {script-id: script-id, reviewer: tx-sender}
+      {
+        rating: rating,
+        comment: comment,
+        reviewed-at: stacks-block-height
+      }
+    )
+    
+    (let ((current-totals (default-to {total-rating: u0, review-count: u0} 
+                                      (map-get? script-rating-totals script-id))))
+      (map-set script-rating-totals script-id
+        {
+          total-rating: (+ (get total-rating current-totals) rating),
+          review-count: (+ (get review-count current-totals) u1)
+        }
+      )
+    )
+    
+    (ok true)
+  )
+)
+
 (define-read-only (get-script (script-id uint))
   (map-get? scripts script-id)
 )
@@ -257,5 +307,27 @@
       platform: platform-cut,
       writer: (- total-amount platform-cut)
     }
+  )
+)
+
+(define-read-only (get-script-review (script-id uint) (reviewer principal))
+  (map-get? script-reviews {script-id: script-id, reviewer: reviewer})
+)
+
+(define-read-only (get-script-average-rating (script-id uint))
+  (match (map-get? script-rating-totals script-id)
+    totals 
+      (if (> (get review-count totals) u0)
+        (some (/ (get total-rating totals) (get review-count totals)))
+        none
+      )
+    none
+  )
+)
+
+(define-read-only (get-script-review-count (script-id uint))
+  (match (map-get? script-rating-totals script-id)
+    totals (get review-count totals)
+    u0
   )
 )
